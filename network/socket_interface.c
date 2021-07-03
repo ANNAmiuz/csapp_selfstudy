@@ -49,10 +49,11 @@ int socket(int domain, int type, int protocol);
 //Returns: nonnegative descriptor if OK, −1 on error
 
 /*
- * Client: how to use the socket for connection?
+ * CLIENT: how to use the socket for connection?
  * connect(): needs fd, socket address (SERVER IP + SERVER PORT), address length (for parsing) = sizeof(sockaddr_in)
- * NOTICE: CLIENT IP is the localhost name; CLIENT is appointed by KERNEL (bind to 0 can work also)
- * The IP & PORT of client is in PH (internet packet header), sent to SERVER
+ * NOTICE: fd is associated with socket address. CLIENT IP = localhost; CLIENT is appointed by KERNEL (bind to 0 can work also)
+ * addr contain IP & PORT of SERVER 
+ * IP & PORT of CLIENT is in PH (internet packet header), sent to SERVER
  */
 #include <sys/socket.h>
 int connect(int clientfd, const struct sockaddr *addr, socklen_t addrlen);
@@ -62,8 +63,51 @@ int connect(int clientfd, const struct sockaddr *addr, socklen_t addrlen);
 //if successful, ready for read & write for the connection (x:y,addr.sin_addr:addr.sin_port)
 
 /*
+ * CLIENT must know the IP & PORT to access a service.
+ * So, SERVER must associate a "socket fd" to this well-known PORT number.
  * 
- *
+ * SERVER: bind(), needs info: the new created socket fd, SERVER socket address (IP+PORT), address length 
+ * NOTICE: fd is associated with SERVER sockaddr. IP = SERVER host; PORT is given by programmer.
+ */
+#include <sys/socket.h>
+int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
+//Returns: 0 if OK, −1 on error
+//asks the kernel to associate the server’s socket address in addr with the socket descriptor sockfd
+//server must have a call to bind(), since the client must know what are the preset ports
+//example: 80 bind to web service
+
+/*
+ * socket(): create ACTIVE socket by default
+ * So, SERVER must tell the kernel that the descriptor will be used by a server instead of a client
+ * 
+ * SERVER: listen(), needs info: the new created socket fd, max request number
+ * NOTICE: fd has been binded with IP & PORT. After invoking listen(), this fd is PASSIVE, binded to SERVER IP & ginven PORT.
+ * ACTIVE: send requests
+ * PASSIVE: receive requests
+ */
+#include <sys/socket.h>
+int listen(int sockfd, int backlog);
+//Returns: 0 if OK, −1 on error
+//converts sockfd from an active socket to a listening socket (accept connection from clients)
+//backlog: hint about # of outstanding connection requests that the kernel should queue up before it starts to refuse requests
+
+/*
+ * "listenfd" is binded to the well-known PORT.
+ * So, SERVER must have another fd for the following communication.
+ * Otherwise, the "listenfd" will be occupied and leads to long wait time.
+ * 
+ * SERVER: accept(), needs info: the new created socket listenfd, a pointer to fill in CLIENT socket addr
+ * Return connectedFD.
+ * LISTEN: created once, exist for the lifetime of SERVER
+ * CONNECTED: created each time SERVER accept requests (accept function return)
+ */
+#include <sys/socket.h>
+int accept(int listenfd, struct sockaddr *addr, int *addrlen);
+//Returns: nonnegative connected descriptor if OK, −1 on error
+//Servers wait for connection requests from clients to arrive on listenfd
+
+/* Given that there are many information necessary for the function call mentioned above,
+ * it will be good if there is a stucture that can hold all these information.
  */
 
 /*
@@ -83,4 +127,118 @@ struct addrinfo
     struct sockaddr *ai_addr; /* Ptr to socket address structure */
     struct addrinfo *ai_next; /* Ptr to next item in linked list */
 };
-//can be passed directly to socket(), connect(), bind()
+
+/*
+ * To get the addrinfo struct, we need a function
+ */
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netdb.h>
+int getaddrinfo(const char *host,             /* hostname or address */
+                const char *service,          /* port(80) or service name(http) */
+                const struct addrinfo *hints, /* Input parameter */
+                struct addrinfo **result);    /* output linked list */
+//converts string representations of hostnames, host addresses, service names, and port numbers into socket address structures
+//hostname + services in socket address
+//Returns: 0 if OK, nonzero error code on error
+
+void freeaddrinfo(struct addrinfo *result);
+//frees the entire linked list
+//Returns: nothing, avoid memory leak
+
+const char *gai_strerror(int errcode);
+//convert error code to message
+
+/* package all these functions to provide convinent calling */
+#include "csapp.h"
+int open_clientfd(char *hostname, char *port);
+//Returns: descriptor if OK, −1 on error
+//establishes a connection with a server running on host hostname and listening for connection requests on port number port
+
+#include "csapp.h"
+int open_listenfd(char *port);
+//Returns: descriptor if OK, −1 on error
+//creates a listening descriptor that is ready to receive connection requests by calling the open_listenfd function
+//ready to receive requests on port
+
+/* implementation of these two helper function */
+
+int open_clientfd(char *serverhost, char *serverport)
+{
+    int clientfd;
+    struct addrinfo hints, *listp, *curp;
+
+    /* get a list of potential server address */
+    memset(&hints, 0, sizeof(struct addrinfo));
+    hints.ai_socktype = SOCK_STREAM; /* open a CONNECTION */
+    hints.ai_flags = AI_NUMERICSERV; /* use numeric port argument */
+    hints.ai_flags |= AI_ADDRCONFIG; /* recommended for connection */
+    getaddrinfo(serverhost, serverport, &hints, &listp);
+
+    /* walk the list for one that we can successfully connect to */
+    for (curp = listp; curp; curp = curp->ai_next)
+    {
+        /* create socket fd */
+        if ((clientfd = socket(curp->ai_family, curp->ai_socktype, curp->ai_protocol)) < 0)
+        {
+            continue;
+        }
+
+        /* connect to SERVER */
+        if (connect(clientfd, curp->ai_addr, curp->ai_addrlen) != -1)
+        {
+            break;
+        }
+        close(clientfd);
+    }
+
+    /* clean up */
+    freeaddrinfo(listp);
+    if (!listp)
+        return -1;
+    else
+        return clientfd;
+}
+
+int open_listenfd(char *serverport)
+{
+    struct addrinfo hints, *listp, *curp;
+    int listenfd, optval = 1;
+
+    /* get a list of potential SERVER address */
+    memset(&hints, 0, sizeof(struct addrinfo));
+    hints.ai_socktype = SOCK_STREAM;               /* Accept CONNECTION */
+    hints.ai_flags = AI_PASSIVE | AI_ADDRCONFIG;   /* on any IP addresses */
+    hints.ai_flags |= AI_NUMERICSERV;              /* numeric port number */
+    getaddrinfo(NULL, serverport, &hints, &listp); /* own server hostname as NULL */
+
+    /* walk the list for one that we can bind to */
+    for (curp = listp; curp; curp = curp->ai_next){
+        /* create socket fd */
+        if ((listenfd = socket(curp->ai_family, curp->ai_socktype, curp->ai_protocol)) < 0)
+        {
+            continue;
+        }
+
+        /* eliminate "Address already in use error" from bind */
+        setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, (const void *)&optval, sizeof(int));
+
+        /* bind fd to address */
+        if (connect(listenfd, curp->ai_addr, curp->ai_addrlen) != -1)
+        {
+            break;
+        }
+        close(listenfd);
+    }
+
+    /* clean up */
+    freeaddrinfo(listp);
+    if (!listp)
+        return -1;
+    /* n make it a listening socket ready to accept connection requests */
+    if (listen(listenfd, LISTENQ) < 0){
+        close(listenfd);
+        return -1;
+    }
+    return listenfd;
+}
