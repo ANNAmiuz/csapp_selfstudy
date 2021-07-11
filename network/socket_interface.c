@@ -10,7 +10,7 @@
  * Then they can build a connection, and perform write / read.
  * 
  * Socket is: (插口？)
- * a NOTION representating the SYSTEM RESOURCES that can support and provice the communication mentioned above.
+ * a NOTION representating the SYSTEM RESOURCES that can support and provide the communication mentioned above.
  */
 
 /* socket address */
@@ -40,7 +40,7 @@ typedef struct sockaddr SA;
 
 /*
  * How to new a socket? Necessary info: protocol family, socket type, (protocol)
- * NOTICE: socket is not related to the 32-bit IP and 16-bit PORT
+ * NOTICE: socket is not related to the 32-bit IP and 16-bit PORT after NEW
  */
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -213,7 +213,8 @@ int open_listenfd(char *serverport)
     getaddrinfo(NULL, serverport, &hints, &listp); /* own server hostname as NULL */
 
     /* walk the list for one that we can bind to */
-    for (curp = listp; curp; curp = curp->ai_next){
+    for (curp = listp; curp; curp = curp->ai_next)
+    {
         /* create socket fd */
         if ((listenfd = socket(curp->ai_family, curp->ai_socktype, curp->ai_protocol)) < 0)
         {
@@ -224,7 +225,7 @@ int open_listenfd(char *serverport)
         setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, (const void *)&optval, sizeof(int));
 
         /* bind fd to address */
-        if (connect(listenfd, curp->ai_addr, curp->ai_addrlen) != -1)
+        if (bind(listenfd, curp->ai_addr, curp->ai_addrlen))
         {
             break;
         }
@@ -236,9 +237,60 @@ int open_listenfd(char *serverport)
     if (!listp)
         return -1;
     /* n make it a listening socket ready to accept connection requests */
-    if (listen(listenfd, LISTENQ) < 0){
+    if (listen(listenfd, LISTENQ) < 0)
+    {
         close(listenfd);
         return -1;
     }
     return listenfd;
+}
+
+/* example for using these two functions to build a connection between cliend and server */
+/* telnet: create connection with a server running on <host> and <portnum> */
+/* echo client */
+int main(int argc, char **argv)
+{
+    int clientfd;
+    char buf[MAXLINE];
+    rio_t rio;
+
+    if (argc != 3)
+    {
+        fprintf(stderr, "usage: %s <host> <portnum>\n", argv[0]);
+        exit(0);
+    }
+
+    clientfd = open_clientfd(argv[1], argv[2]);
+    rio_readinitb(&rio, clientfd);
+
+    while (fgets(buf, MAXLINE, stdin) != NULL){
+        rio_writen(clientfd, buf, strlen(buf));
+        rio_readlineb(&rio, buf, MAXLINE);
+        fputs(buf, stdout);
+    }
+    close(clientfd);
+    exit(0);
+}
+/* echo server */
+int main(int argc, char ** argv){
+    int listenfd, connfd;
+    socklen_t clientlen;
+    struct sockaddr_storage clientaddr;
+    char clientHost[MAXLINE], clientPort[MAXLINE];
+
+    if (argc != 2){
+        fprintf(stderr, "usage: %s <port>\n", argv[0]);
+        exit(0);
+    }
+    listenfd = open_listenfd(argv[1]);
+    while (1){
+        clientlen = sizeof(struct sockaddr_storage);
+        connfd = accept(listenfd, (SA*)&clientaddr, &clientlen);
+        getnameinfo((SA*) &clientaddr, clientlen, clientHost, MAXLINE, clientPort, MAXLINE, 0);
+        printf("Connected to (%s, %s) \n", clientHost, clientPort);
+        echo(connfd);
+        close(connfd);
+
+    }
+    exit(0);
 }
