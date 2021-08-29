@@ -8,9 +8,8 @@
  */
 #include "csapp.h"
 
-#define BROWSER
-
 void doit(int fd);
+void SIGCHLD_handler(int sig);
 void read_requesthdrs(rio_t *rp);
 int parse_uri(char *uri, char *filename, char *cgiargs);
 void serve_static(int fd, char *filename, int filesize);
@@ -19,20 +18,17 @@ void serve_dynamic(int fd, char *filename, char *cgiargs);
 void clienterror(int fd, char *cause, char *errnum,
                  char *shortmsg, char *longmsg);
 
-void echo(int connfd)
+void SIGCHLD_handler(int sig)
 {
-    ssize_t n;
-    char buf[MAXLINE];
-    rio_t rio;
+    int olderrno = errno;
 
-    rio_readinitb(&rio, connfd);
-    int file  = open("out11_6", O_RDWR, S_IWOTH);
-    while (n = rio_readlineb(&rio, buf, MAXLINE) != 0){
-        if (strcmp(buf, "\r\n") == 0) break;
-        write(file, buf, MAXLINE);
-        printf(buf);
-        Rio_writen(connfd, buf, n);
+    while(waitpid(-1, NULL, 0) > 0){
+        sio_puts("Handler reaped a child.\n");
     }
+    if (errno != ECHILD){
+        sio_error("Waitpid error.\n");
+    }
+    errno = olderrno;
 }
 
 int main(int argc, char **argv)
@@ -41,7 +37,7 @@ int main(int argc, char **argv)
     char hostname[MAXLINE], port[MAXLINE];
     socklen_t clientlen;
     struct sockaddr_storage clientaddr;
-
+    
     /* Check command line args */
     if (argc != 2)
     {
@@ -57,8 +53,7 @@ int main(int argc, char **argv)
         Getnameinfo((SA *)&clientaddr, clientlen, hostname, MAXLINE,
                     port, MAXLINE, 0);
         printf("Accepted connection from (%s, %s)\n", hostname, port);
-        //doit(connfd);  //line:netp:tiny:doit
-        echo(connfd);
+        doit(connfd);  //line:netp:tiny:doit
         Close(connfd); //line:netp:tiny:close
     }
 }
@@ -230,6 +225,10 @@ void serve_dynamic(int fd, char *filename, char *cgiargs)
 {
     char buf[MAXLINE], *emptylist[] = {NULL};
 
+    if (signal(SIGCHLD, SIGCHLD_handler) == SIG_ERR){
+        unix_error("signal error.\n");
+    }
+    
     /* Return first part of HTTP response */
     sprintf(buf, "HTTP/1.0 200 OK\r\n");
     Rio_writen(fd, buf, strlen(buf));

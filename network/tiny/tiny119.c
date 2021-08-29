@@ -8,8 +8,6 @@
  */
 #include "csapp.h"
 
-#define BROWSER
-
 void doit(int fd);
 void read_requesthdrs(rio_t *rp);
 int parse_uri(char *uri, char *filename, char *cgiargs);
@@ -18,22 +16,6 @@ void get_filetype(char *filename, char *filetype);
 void serve_dynamic(int fd, char *filename, char *cgiargs);
 void clienterror(int fd, char *cause, char *errnum,
                  char *shortmsg, char *longmsg);
-
-void echo(int connfd)
-{
-    ssize_t n;
-    char buf[MAXLINE];
-    rio_t rio;
-
-    rio_readinitb(&rio, connfd);
-    int file  = open("out11_6", O_RDWR, S_IWOTH);
-    while (n = rio_readlineb(&rio, buf, MAXLINE) != 0){
-        if (strcmp(buf, "\r\n") == 0) break;
-        write(file, buf, MAXLINE);
-        printf(buf);
-        Rio_writen(connfd, buf, n);
-    }
-}
 
 int main(int argc, char **argv)
 {
@@ -57,8 +39,7 @@ int main(int argc, char **argv)
         Getnameinfo((SA *)&clientaddr, clientlen, hostname, MAXLINE,
                     port, MAXLINE, 0);
         printf("Accepted connection from (%s, %s)\n", hostname, port);
-        //doit(connfd);  //line:netp:tiny:doit
-        echo(connfd);
+        doit(connfd);  //line:netp:tiny:doit
         Close(connfd); //line:netp:tiny:close
     }
 }
@@ -198,10 +179,14 @@ void serve_static(int fd, char *filename, int filesize)
 
     /* Send response body to client */
     srcfd = Open(filename, O_RDONLY, 0);                        //line:netp:servestatic:open
-    srcp = Mmap(0, filesize, PROT_READ, MAP_PRIVATE, srcfd, 0); //line:netp:servestatic:mmap
-    Close(srcfd);                                               //line:netp:servestatic:close
-    Rio_writen(fd, srcp, filesize);                             //line:netp:servestatic:write
-    Munmap(srcp, filesize);                                     //line:netp:servestatic:munmap
+    void * content = malloc(filesize);
+    rio_readn(srcfd, content, filesize);
+    //srcp = Mmap(0, filesize, PROT_READ, MAP_PRIVATE, srcfd, 0); //line:netp:servestatic:mmap
+    Close(srcfd);  
+    rio_writen(fd,content, filesize);
+    free(content);                                             //line:netp:servestatic:close
+    //Rio_writen(fd, srcp, filesize);                             //line:netp:servestatic:write
+    //Munmap(srcp, filesize);                                     //line:netp:servestatic:munmap
 }
 
 /*

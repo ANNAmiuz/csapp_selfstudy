@@ -8,32 +8,14 @@
  */
 #include "csapp.h"
 
-#define BROWSER
-
 void doit(int fd);
 void read_requesthdrs(rio_t *rp);
 int parse_uri(char *uri, char *filename, char *cgiargs);
-void serve_static(int fd, char *filename, int filesize);
+void serve_static(int fd, char *filename, int filesize, char * method);
 void get_filetype(char *filename, char *filetype);
-void serve_dynamic(int fd, char *filename, char *cgiargs);
+void serve_dynamic(int fd, char *filename, char *cgiargs, char * method);
 void clienterror(int fd, char *cause, char *errnum,
                  char *shortmsg, char *longmsg);
-
-void echo(int connfd)
-{
-    ssize_t n;
-    char buf[MAXLINE];
-    rio_t rio;
-
-    rio_readinitb(&rio, connfd);
-    int file  = open("out11_6", O_RDWR, S_IWOTH);
-    while (n = rio_readlineb(&rio, buf, MAXLINE) != 0){
-        if (strcmp(buf, "\r\n") == 0) break;
-        write(file, buf, MAXLINE);
-        printf(buf);
-        Rio_writen(connfd, buf, n);
-    }
-}
 
 int main(int argc, char **argv)
 {
@@ -57,8 +39,7 @@ int main(int argc, char **argv)
         Getnameinfo((SA *)&clientaddr, clientlen, hostname, MAXLINE,
                     port, MAXLINE, 0);
         printf("Accepted connection from (%s, %s)\n", hostname, port);
-        //doit(connfd);  //line:netp:tiny:doit
-        echo(connfd);
+        doit(connfd);  //line:netp:tiny:doit
         Close(connfd); //line:netp:tiny:close
     }
 }
@@ -82,7 +63,7 @@ void doit(int fd)
         return;
     printf("%s", buf);
     sscanf(buf, "%s %s %s", method, uri, version); //line:netp:doit:parserequest
-    if (strcasecmp(method, "GET"))
+    if (strcasecmp(method, "GET") && strcasecmp(method, "HEAD"))
     { //line:netp:doit:beginrequesterr
         clienterror(fd, method, "501", "Not Implemented",
                     "Tiny does not implement this method");
@@ -107,7 +88,7 @@ void doit(int fd)
                         "Tiny couldn't read the file");
             return;
         }
-        serve_static(fd, filename, sbuf.st_size); //line:netp:doit:servestatic
+        serve_static(fd, filename, sbuf.st_size, method); //line:netp:doit:servestatic
     }
     else
     { /* Serve dynamic content */
@@ -117,7 +98,7 @@ void doit(int fd)
                         "Tiny couldn't run the CGI program");
             return;
         }
-        serve_dynamic(fd, filename, cgiargs); //line:netp:doit:servedynamic
+        serve_dynamic(fd, filename, cgiargs, method); //line:netp:doit:servedynamic
     }
 }
 /* $end doit */
@@ -180,7 +161,7 @@ int parse_uri(char *uri, char *filename, char *cgiargs)
  * serve_static - copy a file back to the client 
  */
 /* $begin serve_static */
-void serve_static(int fd, char *filename, int filesize)
+void serve_static(int fd, char *filename, int filesize, char * method)
 {
     int srcfd;
     char *srcp, filetype[MAXLINE], buf[MAXBUF];
@@ -195,6 +176,10 @@ void serve_static(int fd, char *filename, int filesize)
     Rio_writen(fd, buf, strlen(buf));
     sprintf(buf, "Content-type: %s\r\n\r\n", filetype);
     Rio_writen(fd, buf, strlen(buf)); //line:netp:servestatic:endserve
+
+    if (strcasecmp(method, "HEAD") == 0){
+        return;
+    }
 
     /* Send response body to client */
     srcfd = Open(filename, O_RDONLY, 0);                        //line:netp:servestatic:open
@@ -226,7 +211,7 @@ void get_filetype(char *filename, char *filetype)
  * serve_dynamic - run a CGI program on behalf of the client
  */
 /* $begin serve_dynamic */
-void serve_dynamic(int fd, char *filename, char *cgiargs)
+void serve_dynamic(int fd, char *filename, char *cgiargs, char * method)
 {
     char buf[MAXLINE], *emptylist[] = {NULL};
 
@@ -240,6 +225,7 @@ void serve_dynamic(int fd, char *filename, char *cgiargs)
     { /* Child */ //line:netp:servedynamic:fork
         /* Real server would set all CGI vars here */
         setenv("QUERY_STRING", cgiargs, 1);                         //real servers will set the other env var as well
+        setenv("REQUEST_METHOD", method, 1);
         Dup2(fd, STDOUT_FILENO); /* Redirect stdout to client */    //line:netp:servedynamic:dup2
         Execve(filename, emptylist, environ); /* Run CGI program */ //line:netp:servedynamic:execve
     }

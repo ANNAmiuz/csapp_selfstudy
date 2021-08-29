@@ -8,9 +8,9 @@
  */
 #include "csapp.h"
 
-#define BROWSER
-
 void doit(int fd);
+void SIGCHLD_handler(int sig);
+void SIGPIPE_handler(int sig);
 void read_requesthdrs(rio_t *rp);
 int parse_uri(char *uri, char *filename, char *cgiargs);
 void serve_static(int fd, char *filename, int filesize);
@@ -18,21 +18,29 @@ void get_filetype(char *filename, char *filetype);
 void serve_dynamic(int fd, char *filename, char *cgiargs);
 void clienterror(int fd, char *cause, char *errnum,
                  char *shortmsg, char *longmsg);
+void my_my_rio_writen(int fd, void * usrbuf, size_t n);
 
-void echo(int connfd)
+void SIGCHLD_handler(int sig)
 {
-    ssize_t n;
-    char buf[MAXLINE];
-    rio_t rio;
+    int olderrno = errno;
 
-    rio_readinitb(&rio, connfd);
-    int file  = open("out11_6", O_RDWR, S_IWOTH);
-    while (n = rio_readlineb(&rio, buf, MAXLINE) != 0){
-        if (strcmp(buf, "\r\n") == 0) break;
-        write(file, buf, MAXLINE);
-        printf(buf);
-        Rio_writen(connfd, buf, n);
+    while(waitpid(-1, NULL, 0) > 0){
+        sio_puts("Handler reaped a child.\n");
     }
+    if (errno != ECHILD){
+        sio_error("Waitpid error.\n");
+    }
+    errno = olderrno;
+}
+
+void my_my_rio_writen(int fd, void * usrbuf, size_t n)
+{
+    int olderrno = errno;
+    if (my_rio_writen(fd, usrbuf, n) != n){
+        unix_error("my_rio_writen error.\n");
+        if (errno == EPIPE) unix_error("EPIPE error due to the closed connection.\n");
+    }
+    errno = olderrno;
 }
 
 int main(int argc, char **argv)
@@ -41,14 +49,19 @@ int main(int argc, char **argv)
     char hostname[MAXLINE], port[MAXLINE];
     socklen_t clientlen;
     struct sockaddr_storage clientaddr;
-
+    
     /* Check command line args */
     if (argc != 2)
     {
         fprintf(stderr, "usage: %s <port>\n", argv[0]);
         exit(1);
     }
-
+    if (signal(SIGCHLD, SIGCHLD_handler) == SIG_ERR){
+        unix_error("CHLD signal error.\n");
+    }
+    if (signal(SIGCHLD, SIG_IGN) == SIG_ERR){
+        unix_error("PIPE signal error.\n");
+    }
     listenfd = Open_listenfd(argv[1]);
     while (1)
     {
@@ -57,8 +70,7 @@ int main(int argc, char **argv)
         Getnameinfo((SA *)&clientaddr, clientlen, hostname, MAXLINE,
                     port, MAXLINE, 0);
         printf("Accepted connection from (%s, %s)\n", hostname, port);
-        //doit(connfd);  //line:netp:tiny:doit
-        echo(connfd);
+        doit(connfd);  //line:netp:tiny:doit
         Close(connfd); //line:netp:tiny:close
     }
 }
@@ -188,19 +200,19 @@ void serve_static(int fd, char *filename, int filesize)
     /* Send response headers to client */
     get_filetype(filename, filetype);    //line:netp:servestatic:getfiletype
     sprintf(buf, "HTTP/1.0 200 OK\r\n"); //line:netp:servestatic:beginserve
-    Rio_writen(fd, buf, strlen(buf));
+    my_rio_writen(fd, buf, strlen(buf));
     sprintf(buf, "Server: Tiny Web Server\r\n");
-    Rio_writen(fd, buf, strlen(buf));
+    my_rio_writen(fd, buf, strlen(buf));
     sprintf(buf, "Content-length: %d\r\n", filesize);
-    Rio_writen(fd, buf, strlen(buf));
+    my_rio_writen(fd, buf, strlen(buf));
     sprintf(buf, "Content-type: %s\r\n\r\n", filetype);
-    Rio_writen(fd, buf, strlen(buf)); //line:netp:servestatic:endserve
+    my_rio_writen(fd, buf, strlen(buf)); //line:netp:servestatic:endserve
 
     /* Send response body to client */
     srcfd = Open(filename, O_RDONLY, 0);                        //line:netp:servestatic:open
     srcp = Mmap(0, filesize, PROT_READ, MAP_PRIVATE, srcfd, 0); //line:netp:servestatic:mmap
     Close(srcfd);                                               //line:netp:servestatic:close
-    Rio_writen(fd, srcp, filesize);                             //line:netp:servestatic:write
+    my_rio_writen(fd, srcp, filesize);                             //line:netp:servestatic:write
     Munmap(srcp, filesize);                                     //line:netp:servestatic:munmap
 }
 
@@ -230,15 +242,19 @@ void serve_dynamic(int fd, char *filename, char *cgiargs)
 {
     char buf[MAXLINE], *emptylist[] = {NULL};
 
+    
     /* Return first part of HTTP response */
     sprintf(buf, "HTTP/1.0 200 OK\r\n");
-    Rio_writen(fd, buf, strlen(buf));
+    my_rio_writen(fd, buf, strlen(buf));
     sprintf(buf, "Server: Tiny Web Server\r\n");
-    Rio_writen(fd, buf, strlen(buf));
+    my_rio_writen(fd, buf, strlen(buf));
 
     if (Fork() == 0)
     { /* Child */ //line:netp:servedynamic:fork
         /* Real server would set all CGI vars here */
+        if (signal(SIGPIPE, SIG_DFL) == SIG_ERR){
+            unix_error("SIGPIPE unmask error.\n");
+        }
         setenv("QUERY_STRING", cgiargs, 1);                         //real servers will set the other env var as well
         Dup2(fd, STDOUT_FILENO); /* Redirect stdout to client */    //line:netp:servedynamic:dup2
         Execve(filename, emptylist, environ); /* Run CGI program */ //line:netp:servedynamic:execve
@@ -258,22 +274,22 @@ void clienterror(int fd, char *cause, char *errnum,
 
     /* Print the HTTP response headers */
     sprintf(buf, "HTTP/1.0 %s %s\r\n", errnum, shortmsg);
-    Rio_writen(fd, buf, strlen(buf));
+    my_rio_writen(fd, buf, strlen(buf));
     sprintf(buf, "Content-type: text/html\r\n\r\n");
-    Rio_writen(fd, buf, strlen(buf));
+    my_rio_writen(fd, buf, strlen(buf));
 
     /* Print the HTTP response body */
     sprintf(buf, "<html><title>Tiny Error</title>");
-    Rio_writen(fd, buf, strlen(buf));
+    my_rio_writen(fd, buf, strlen(buf));
     sprintf(buf, "<body bgcolor="
                  "ffffff"
                  ">\r\n");
-    Rio_writen(fd, buf, strlen(buf));
+    my_rio_writen(fd, buf, strlen(buf));
     sprintf(buf, "%s: %s\r\n", errnum, shortmsg);
-    Rio_writen(fd, buf, strlen(buf));
+    my_rio_writen(fd, buf, strlen(buf));
     sprintf(buf, "<p>%s: %s\r\n", longmsg, cause);
-    Rio_writen(fd, buf, strlen(buf));
+    my_rio_writen(fd, buf, strlen(buf));
     sprintf(buf, "<hr><em>The Tiny Web server</em>\r\n");
-    Rio_writen(fd, buf, strlen(buf));
+    my_rio_writen(fd, buf, strlen(buf));
 }
 /* $end clienterror */
